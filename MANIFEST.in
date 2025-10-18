@@ -6,6 +6,7 @@
 include README.md
 include LICENSE*
 include pyproject.toml
+include opm.example.yaml
 
 # Exclude local/dev artifacts
 exclude setup.sh

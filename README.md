@@ -174,7 +174,7 @@ These are upcoming features currently under development:
 | ---------------------- | --------------------------------------------------- |
 | **Language**           | Python 3.10+                                        |
 | **Dependencies**       | typer, rich, watchdog, requests, pyyaml, websockets |
-| **Odoo Compatibility** | 14 → 17+                                            |
+| **Odoo Compatibility** | 15 → 17+                                            |
 | **Platforms**          | macOS / Linux                                       |
 | **Configuration File** | `opm.yaml` (auto-created on first run)              |
 

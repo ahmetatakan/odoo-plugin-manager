@@ -1,30 +1,31 @@
 # src/opm/cli/commands/init.py
-from __future__ import annotations
-import typer, shutil
 from pathlib import Path
-from ...core.utils import info
+import typer
+
+DEFAULT_YAML = """\
+platform: odoo
+
+runtime:
+  odoo_url: "http://localhost:10017"
+  db: "main"
+  user: "<user>"
+  pass: "<password>"
+  container: ""
+  db_host: "<db>"
+  db_port: 5432
+  db_user: "<user>"
+  db_password: "<password>"
+  addons:
+    - "<addons_path>"
+  vite_proxy: "http://localhost:5173"
+  ws_host: "127.0.0.1"
+  ws_port: 8765
+"""
 
 def init():
-    """
-    Initialize a new OPM project in the current directory.
-    """
-    root = Path(".")
-    example = root / "opm.example.yaml"
-    target = root / "opm.yaml"
-
-    if not target.exists():
-        if example.exists():
-            shutil.copy(example, target)
-            info("✅ Created opm.yaml configuration file.")
-        else:
-            info("⚠️  Missing opm.example.yaml — please create opm.yaml manually.")
-    else:
-        info("ℹ️  opm.yaml already exists, skipping creation.")
-
-    Path(".opm").mkdir(exist_ok=True)
-    Path("dist").mkdir(exist_ok=True)
-    info("✅ Created .opm/ and dist/ directories.")
-    info("🎉 Project initialized successfully.")
-    info("Next steps:")
-    info("  • Run `opm dev` to start watching for changes.")
-    info("  • Run `opm test <module>` to execute tests inside Docker.")
+  target = Path("opm.yaml")
+  if target.exists():
+    typer.echo("[opm] opm.yaml already exists; skipped.")
+    raise typer.Exit(0)
+  target.write_text(DEFAULT_YAML, encoding="utf-8")
+  typer.echo("[opm] ✅ Configuration created successfully at ./opm.yaml")
