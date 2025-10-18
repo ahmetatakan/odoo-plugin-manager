@@ -13,7 +13,7 @@ Designed for developers who want to work faster and cleaner with **Odoo 14 → 1
 Install from PyPI:
 
 ```bash
-pip install opm
+pip install odoo-plugin-manager
 ```
 
 ---

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "odoo-plugin-manager"
-version = "0.1.0"
+version = "0.1.2"
 description = "OPM - Plugin Manager for Odoo (CLI)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,10 +29,6 @@ classifiers = [
   "Operating System :: OS Independent"
 ]
 
-[project.urls]
-Homepage = "https://example.com/opm"
-Source = "https://example.com/opm/repo"
-Issues = "https://example.com/opm/issues"
 
 [project.scripts]
 opm = "opm.cli.__main__:app"

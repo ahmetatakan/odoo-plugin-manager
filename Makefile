@@ -12,7 +12,7 @@ ifneq (,$(wildcard .env))
 endif
 
 PYTHON := python3
-PACKAGE := opm
+PACKAGE := odoo-plugin-manager
 DIST_DIR := dist
 
 # PyPI settings
@@ -49,9 +49,10 @@ clean:
 # ----------------------
 bump:
 	@echo "🔢 Bumping patch version..."
-	@old=$$(grep -m1 '^version' pyproject.toml | cut -d'\"' -f2); \
+	@old=$$(grep -E '^[[:space:]]*version[[:space:]]*=' pyproject.toml | head -n1 | sed -E 's/^[^"]*"([^"]+)".*/\1/'); \
+	if [ -z "$$old" ]; then echo "❌ Version not found in pyproject.toml"; exit 1; fi; \
 	new=$$(python3 -c "from packaging import version; parts=version.parse('$$old').base_version.split('.'); parts[-1]=str(int(parts[-1])+1); print('.'.join(parts))"); \
-	sed -i '' "s/version = \"$$old\"/version = \"$$new\"/" pyproject.toml; \
+	if [[ "$$(uname)" == "Darwin" ]]; then sed -i '' "s/version = \"$$old\"/version = \"$$new\"/" pyproject.toml; else sed -i "s/version = \"$$old\"/version = \"$$new\"/" pyproject.toml; fi; \
 	echo "✅ New version: $$new"
 
 # ----------------------
