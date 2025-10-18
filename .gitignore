@@ -1,0 +1,55 @@
+# -----------------------------
+# 🐍 Python cache & packaging
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.log
+.cache/
+.mypy_cache/
+pytest_cache/
+.coverage
+
+# -----------------------------
+# 🧩 Virtual envs & local env
+# -----------------------------
+.venv/
+.env
+.env.*
+!.env.example  # örnek dosya varsa tutulsun
+
+# -----------------------------
+# 📦 Build & distribution outputs
+# -----------------------------
+build/
+dist/
+.opm/
+.opm/artifacts/
+opm.yaml
+junit.xml
+coverage.xml
+
+# -----------------------------
+# 💻 IDE / Editor configs
+# -----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# -----------------------------
+# 🌐 Node / frontend (if added later)
+# -----------------------------
+node_modules/
+*.tsbuildinfo
+
+# -----------------------------
+# 🧱 Odoo addons
+# -----------------------------
+addons/
+
+# -----------------------------
+# 🗂️ OS / Misc
+# -----------------------------
+.DS_Store
+Thumbs.db
