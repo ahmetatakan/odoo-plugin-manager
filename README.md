@@ -4,7 +4,7 @@
 It streamlines development and testing by providing smart automation for cache refreshes,
 module testing, and environment management — without restarting Odoo.
 
-Designed for developers who want to work faster and cleaner with **Odoo 14 → 17+**.
+Designed for developers who want to work faster and cleaner with **Odoo 15 → 17+**.
 
 ---
 
