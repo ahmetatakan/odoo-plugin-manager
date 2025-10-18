@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "opm-cli"
+name = "odoo-plugin-manager"
 version = "0.1.0"
 description = "OPM - Plugin Manager for Odoo (CLI)"
 readme = "README.md"
