@@ -10,6 +10,20 @@ import time
 from ...core.env import load_config
 from ...core.utils import info, run
 
+def _module_exists_on_host(module: str, host_addons: str | None) -> bool:
+    if not host_addons:
+        return False
+    p = Path(host_addons).expanduser().resolve() / module
+    return p.is_dir()
+
+def _module_exists_in_container(module: str, container: str) -> bool:
+    # /mnt/extra-addons altında var mı?
+    code, out, _ = run([
+        "bash", "-lc",
+        f"docker exec -i {shlex.quote(container)} sh -lc '[ -d /mnt/extra-addons/{shlex.quote(module)} ] && echo OK || true'"
+    ])
+    return (code == 0) and ("OK" in (out or ""))
+
 def test(
     module: str = typer.Argument(..., help="Module name (e.g. opm_dev_helper)"),
     db: str = typer.Option(None, "--db", "-d", help="Database name (fallback: runtime.db)"),
@@ -49,6 +63,27 @@ def test(
             host_addons = str(Path(rta[0]).expanduser().resolve())
 
     info(f"[opm] Host addons: {host_addons or '(not provided)'}")
+
+    # --- preflight module existence check ---
+    found_locally = _module_exists_on_host(module, host_addons)
+    found_in_container = False
+    if container:
+        try:
+            found_in_container = _module_exists_in_container(module, container)
+        except Exception:
+            found_in_container = False
+
+    if not (found_locally or found_in_container):
+        info(
+            f"❌ Module '{module}' not found under any addons path.\n"
+            f"   Checked host: {host_addons or '(unset)'}\n"
+            f"   Checked container: /mnt/extra-addons/{module} (container={container or 'N/A'})\n"
+            f"   Hints:\n"
+            f"   • Ensure runtime.addons points to the folder that contains '{module}/'.\n"
+            f"   • If running in Docker, bind-mount that folder to /mnt/extra-addons.\n"
+            f"   • Or pass --addons /path/to/addons explicitly."
+        )
+        raise typer.Exit(2)
 
     # Build addons-path (inside container)
     addons_path = "/usr/lib/python3/dist-packages/odoo/addons"
