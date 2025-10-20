@@ -23,6 +23,11 @@ runtime:
 """
 
 def init():
+  
+  """
+  Initialize a new OPM configuration file (opm.yaml).
+  """
+  
   target = Path("opm.yaml")
   if target.exists():
     typer.echo("[opm] opm.yaml already exists; skipped.")

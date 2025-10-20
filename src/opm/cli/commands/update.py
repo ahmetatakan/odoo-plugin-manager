@@ -24,7 +24,7 @@ def _module_exists_in_container(module: str, container: str) -> bool:
     ])
     return (code == 0) and ("OK" in (out or ""))
 
-def test(
+def update(
     module: str = typer.Argument(..., help="Module name (e.g. opm_dev_helper)"),
     db: str = typer.Option(None, "--db", "-d", help="Database name (fallback: runtime.db)"),
     container: str = typer.Option(None, "--container", "-c", help="Docker container name for Odoo (use `docker ps`)"),
@@ -35,11 +35,11 @@ def test(
 ):
     
     """
-    Run Odoo module tests (⚠️ development use only, not for production).
+    Update (install or upgrade) a single Odoo module without running tests.
     """
     
     cfg = load_config()
-    info("[opm] 🧪 Starting test run…")
+    info("[opm] 🧪 Starting update run…")
     container = container or cfg.get("runtime", "container")
     db = db or cfg.get("runtime", "db") or "odoo"
     
@@ -124,22 +124,22 @@ def test(
         log_flag = "--log-level=debug" if debug else ""
         # Always force Odoo to write to STDOUT so we can capture logs reliably
         log_file_flag = "--logfile=-"
-        container_log = f"/tmp/opm_test_{int(time.time())}.log"
+        container_log = f"/tmp/opm_update_{int(time.time())}.log"
         # Force logfile to a container path we can copy back reliably
         log_file_flag = f"--logfile={container_log}"
 
         db_args_str = " ".join(db_args)
         cmd = f"""docker exec {tty_flag} {shlex.quote(container)} {shlex.quote(odoo_bin)} -d {shlex.quote(db)} \
-                  -i {shlex.quote(module)} -u {shlex.quote(module)} --test-enable --stop-after-init \
+                  -i {shlex.quote(module)} -u {shlex.quote(module)} --stop-after-init \
                   --addons-path={shlex.quote(addons_path)} {db_args_str} {ports} {log_flag} {log_file_flag}"""
     else:
         # bare-metal fallback (expects `odoo` in PATH)
         db_args_str = " ".join(db_args)
         extra_log = " --log-level=debug" if debug else ""
         cmd = f"""stdbuf -oL -eL odoo -d {shlex.quote(db)} -i {shlex.quote(module)} -u {shlex.quote(module)} \
-                  --test-enable --stop-after-init --addons-path={shlex.quote(addons_path)} {db_args_str} --logfile=-{extra_log}"""
+                  --stop-after-init --addons-path={shlex.quote(addons_path)} {db_args_str} --logfile=-{extra_log}"""
 
-    info("[opm] ▶️  Executing test command…")
+    info("[opm] ▶️  Executing update command…")
     info(f"[opm] Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     t0 = time.time()
     # redacted preview (do not leak db password in logs)
@@ -155,7 +155,7 @@ def test(
     # Ensure artifacts dir and wrap command to capture ALL output (stdout+stderr) to a host log file
     artifacts_dir = Path(".opm/artifacts")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    host_log = artifacts_dir / "test_last.log"
+    host_log = artifacts_dir / "update_last.log"
 
     # Use bash pipefail + tee so we both capture and persist logs; preserve real exit code via PIPESTATUS
     wrapped = (
@@ -167,9 +167,9 @@ def test(
     code, out, err = run(["bash", "-lc", wrapped])
     info(f"[opm] ⏱️  Duration: {time.time() - t0:.1f}s")
     if code == 0:
-        info("✅ Tests finished successfully.")
+        info("✅ Update finished successfully.")
     else:
-        info("❌ Tests failed. Command (redacted):")
+        info("❌ Update failed. Command (redacted):")
         print(redacted_cmd)
         info("Last lines:")
         tail = (out or err or "").splitlines()[-80:]
