@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Optional
 import asyncio
 import threading
+
 try:
     import websockets  # type: ignore
+    from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, ConnectionClosedError
 except Exception:  # pragma: no cover
     websockets = None
 
@@ -17,32 +19,68 @@ from ...core.env import load_config
 from ...core.odoo_rpc import OdooRPC
 from ...core.utils import info
 
-
+# ----------------------------------------------------------------------
+# 💬 WebSocket Bus (with visibility logs)
+# ----------------------------------------------------------------------
 class _WSBus:
     def __init__(self):
         self.clients = set()
 
     async def handler(self, ws):
+        """Handle a connected client and re-broadcast any received messages to all clients."""
         self.clients.add(ws)
         try:
-            async for _ in ws:
-                pass
+            # Listen for incoming messages from the connected client
+            async for msg in ws:
+                try:
+                    # Decode the message (handle both text and binary frames)
+                    text = msg.decode() if isinstance(msg, (bytes, bytearray)) else str(msg)
+                    if text:
+                        # Broadcast the message to all connected clients (including sender)
+                        await self.broadcast(text)
+                except Exception as e:
+                    # Log but continue processing other messages
+                    info(f"[opm] WS handler relay error: {e}")
+                    continue
+        except (ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
+            # Gracefully handle expected disconnections
+            pass
+        except Exception as e:
+            # Log unexpected errors
+            info(f"[opm] WS handler error: {e}")
         finally:
+            # Always remove the client from the active list when disconnected
             self.clients.discard(ws)
 
     async def broadcast(self, msg: str):
+        """Send message to all clients (skip closed) and log count."""
         if not self.clients:
+            info("[opm] WS: no connected clients; skipping broadcast")
             return
-        await asyncio.gather(*(c.send(msg) for c in list(self.clients)), return_exceptions=True)
+        dead = []
+        for c in list(self.clients):
+            try:
+                await c.send(msg)
+            except Exception:
+                dead.append(c)
+        for c in dead:
+            try:
+                await c.close(code=1011, reason="send failed")
+            except Exception:
+                pass
+            self.clients.discard(c)
+        info(f"[opm] WS: broadcast '{msg}' to {len(self.clients)} client(s)")
 
-
-def _start_ws_server(host: str, port: int):
-    """Start a lightweight WS server in a background thread.
+# ----------------------------------------------------------------------
+# ⚙️ WebSocket Server Runner
+# ----------------------------------------------------------------------
+def _start_ws_server(host: str, port: int, ping_interval: int = 30, ping_timeout: int = 60):
+    """
+    Start a lightweight WS server in a background thread.
     Returns (broadcast_sync, stop_sync). If websockets is unavailable, both are no-ops.
     """
     if websockets is None:
-        def _noop(*_a, **_k):
-            return None
+        def _noop(*_a, **_k): return None
         return _noop, _noop
 
     bus = _WSBus()
@@ -50,11 +88,37 @@ def _start_ws_server(host: str, port: int):
     ready = threading.Event()
     stopped = {"flag": False}
 
+    async def _serve_once(h: str, p: int):
+        return await websockets.serve(
+            bus.handler, h, p,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            close_timeout=1,
+            max_size=2**20,
+            max_queue=32,
+        )
+
     async def _main():
-        async with websockets.serve(bus.handler, host, port):
+        srv = None
+        bind_port = port
+        for _ in range(10):  # try up to 10 consecutive ports if busy
+            try:
+                srv = await _serve_once(host, bind_port)
+                info(f"[opm] WebSocket listening on ws://{host}:{bind_port} (ping {ping_interval}s / timeout {ping_timeout}s)")
+                break
+            except OSError:
+                bind_port += 1
+                continue
+        if srv is None:
+            info("[opm] WS could not bind to any port; live-reload disabled.")
             ready.set()
-            while not stopped["flag"]:
-                await asyncio.sleep(0.25)
+            return
+
+        ready.set()
+        while not stopped["flag"]:
+            await asyncio.sleep(0.5)
+        srv.close()
+        await srv.wait_closed()
 
     def _runner():
         try:
@@ -83,7 +147,9 @@ def _start_ws_server(host: str, port: int):
 
     return broadcast_sync, stop_sync
 
-
+# ----------------------------------------------------------------------
+# 👀 Watchdog Event Handler
+# ----------------------------------------------------------------------
 class _WatchHandler(FileSystemEventHandler):
     def __init__(self, on_change):
         super().__init__()
@@ -94,7 +160,9 @@ class _WatchHandler(FileSystemEventHandler):
             return
         self.on_change(Path(event.src_path))
 
-
+# ----------------------------------------------------------------------
+# 🚀 dev command
+# ----------------------------------------------------------------------
 def dev(
     env: Optional[str] = typer.Option(
         None, "--env", "-e",
@@ -109,9 +177,8 @@ def dev(
     """
     cfg = load_config(config)
 
-    # Decide which environment to use
+    # Decide environment
     if env:
-        # If user asked for an env, we MUST use it (no silent fallback)
         if not hasattr(cfg, "resolve_env"):
             raise typer.BadParameter("Your config does not support 'environments'.")
         try:
@@ -123,7 +190,6 @@ def dev(
         data = resolved.data
         info(f"Using environment '{env}' → URL: {data.get('odoo_url')}")
     else:
-        # Explicit message when falling back to runtime
         info("No environment provided, using default runtime configuration.")
         data = {
             "odoo_url": cfg.get("runtime", "odoo_url"),
@@ -132,7 +198,7 @@ def dev(
             "pass":     cfg.get("runtime", "pass"),
         }
 
-    # Resolve addons path (env → runtime → ./addons) if not explicitly provided
+    # Resolve addons path
     if not addons or addons == "./addons":
         candidate = None
         if env:
@@ -151,53 +217,102 @@ def dev(
         else:
             raise typer.BadParameter("No addons path resolved. Pass --addons or define addons in env/runtime or create ./addons")
 
-    # Validate addons path exists and is a directory
     addons_path = Path(addons).expanduser()
     if not addons_path.exists():
         raise typer.BadParameter(f"Addons path does not exist: {addons_path}")
     if not addons_path.is_dir():
         raise typer.BadParameter(f"Addons path is not a directory: {addons_path}")
 
+    # Connect to Odoo
     rpc = OdooRPC(data["odoo_url"], data["db"], data["user"], data["pass"])
     rpc.login()
     info(f"Connected to Odoo environment '{env or 'runtime'}'. Watching for changes in: {addons_path}")
 
-    # Start WS server for live-reload notifications
+    # WebSocket
     ws_host = (cfg.get("runtime", "ws_host") or "127.0.0.1")
     try:
         ws_port = int(cfg.get("runtime", "ws_port") or 8765)
     except Exception:
         ws_port = 8765
-    broadcast, stop_ws = _start_ws_server(ws_host, ws_port)
+    try:
+        ws_ping_interval = int(cfg.get("runtime", "ws_ping_interval") or 30)
+    except Exception:
+        ws_ping_interval = 30
+    try:
+        ws_ping_timeout = int(cfg.get("runtime", "ws_ping_timeout") or 60)
+    except Exception:
+        ws_ping_timeout = 60
+
+    broadcast, stop_ws = _start_ws_server(ws_host, ws_port, ws_ping_interval, ws_ping_timeout)
     if websockets is None:
         info("[opm] websockets package not installed; live-reload WS disabled (pip install websockets)")
-        # Fallback no-ops
-        def broadcast(_msg: str):
-            return None
-        def stop_ws():
-            return None
-    else:
-        info(f"[opm] WebSocket listening on ws://{ws_host}:{ws_port}")
+        def broadcast(_msg: str): return None
+        def stop_ws(): return None
 
+    # on_change handler with XML menu/data heuristic + always-broadcast
     def on_change(path: Path):
         p = str(path)
-        if p.endswith((".xml", ".scss", ".js")):
-            info(f"Asset/template changed: {p} → flush caches")
+        lower = p.lower()
+        try:
+            if p.endswith(".xml"):
+                # Heuristic: menus/data usually need upgrade; views generally flush is enough
+                needs_upgrade = ("menu" in lower) or ("/data/" in lower)
+                if needs_upgrade:
+                    target_module = module or Path(p).parts[-2]
+                    info(f"[opm] XML (menu/data) changed: {p} → quick upgrade {target_module}")
+                    try:
+                        rpc.call("opm.dev.tools", "quick_upgrade", target_module)
+                    except Exception as e:
+                        info(f"[opm] upgrade error: {e}")
+                else:
+                    info(f"[opm] XML (view) changed: {p} → flush caches")
+                    try:
+                        rpc.call("opm.dev.tools", "flush_caches")
+                    except Exception as e:
+                        info(f"[opm] flush error: {e}")
+                # always broadcast after XML
+                try:
+                    broadcast("reload")
+                except Exception:
+                    pass
+                return
+
+            if p.endswith((".scss", ".js")):
+                info(f"[opm] Asset changed: {p} → flush caches")
+                try:
+                    rpc.call("opm.dev.tools", "flush_caches")
+                except Exception as e:
+                    info(f"[opm] flush error: {e}")
+                finally:
+                    try:
+                        broadcast("reload")
+                    except Exception:
+                        pass
+                return
+
+            if p.endswith(".py") or p.endswith("__manifest__.py"):
+                target_module = module or Path(p).parts[-2]
+                info(f"[opm] Python/manifest changed: {p} → quick upgrade {target_module}")
+                try:
+                    rpc.call("opm.dev.tools", "quick_upgrade", target_module)
+                except Exception as e:
+                    info(f"[opm] upgrade error: {e}")
+                finally:
+                    try:
+                        broadcast(f"reload:{target_module}")
+                    except Exception:
+                        pass
+                return
+
+            info(f"[opm] Changed: {p} (no action)")
+
+        except Exception as e:
+            # Guard against any unexpected watcher errors
+            info(f"[opm] on_change error: {e}")
             try:
-                rpc.call("opm.dev.tools", "flush_caches")
                 broadcast("reload")
-            except Exception as e:
-                info(f"flush error: {e}")
-        elif p.endswith(".py") or p.endswith("__manifest__.py"):
-            target_module = module or Path(p).parts[-2]
-            info(f"Python/manifest changed: {p} → quick upgrade {target_module}")
-            try:
-                rpc.call("opm.dev.tools", "quick_upgrade", target_module)
-                broadcast(f"reload:{target_module}")
-            except Exception as e:
-                info(f"upgrade error: {e}")
-        else:
-            info(f"Changed: {p} (no action)")
+            except Exception:
+                pass
 
     handler = _WatchHandler(on_change)
     observer = Observer()
