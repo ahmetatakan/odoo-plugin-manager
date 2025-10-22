@@ -112,10 +112,28 @@ def test(
         odoo_bin = (out or "").strip()
         info(f"[opm] Odoo binary: {odoo_bin}")
 
-        # Ports: Odoo 17+ doesn't support xmlrpc flags; http/longpolling only if desired
+        # --- Determine extra ports (Odoo 18: --longpolling-port removed) ---
         if extra_ports:
-            ports = "--http-port=8070 --longpolling-port=8071"
-            info("[opm] Extra ports enabled: http=8070, longpolling=8071")
+            # Detect supported port flags inside the container (odoo --help)
+            code_h, out_h, _ = run([
+                "bash", "-lc",
+                f"docker exec -i {shlex.quote(container)} sh -lc '{shlex.quote(odoo_bin)} --help || true'"
+            ])
+            help_txt = (out_h or "")
+
+            parts = []
+            # --http-port is still valid
+            if "--http-port" in help_txt:
+                parts.append("--http-port=8070")
+            # --longpolling-port existed up to v17; skip on v18+
+            if "--longpolling-port" in help_txt:
+                parts.append("--longpolling-port=8071")
+
+            ports = " ".join(parts)
+            if parts:
+                info(f"[opm] Extra ports enabled: {ports}")
+            else:
+                info("[opm] No extra port flags supported by this Odoo build.")
         else:
             ports = ""
             info("[opm] Extra ports disabled (using container defaults)")

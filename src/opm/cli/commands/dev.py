@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 import asyncio
 import threading
+from collections import deque
 
 try:
     import websockets  # type: ignore
@@ -24,11 +25,12 @@ from ...core.utils import info
 
 
 # ----------------------------------------------------------------------
-# 💬 WebSocket Bus (with visibility logs)
+# 💬 WebSocket Bus (with visibility logs & throttled no-client log)
 # ----------------------------------------------------------------------
 class _WSBus:
     def __init__(self):
         self.clients = set()
+        self._last_no_client_log = 0.0  # throttle "no clients" log
 
     async def handler(self, ws):
         """Handle a connected client and re-broadcast any received messages to all clients."""
@@ -59,7 +61,11 @@ class _WSBus:
     async def broadcast(self, msg: str):
         """Send message to all clients (skip closed) and log count."""
         if not self.clients:
-            info("[opm] WS: no connected clients; skipping broadcast")
+            # Throttle the "no clients" message to once every 10s
+            now = time.time()
+            if now - self._last_no_client_log > 10:
+                info("[opm] WS: no connected clients; skipping broadcast")
+                self._last_no_client_log = now
             return
         dead = []
         for c in list(self.clients):
@@ -256,9 +262,22 @@ def dev(
         def broadcast(_msg: str): return None
         def stop_ws(): return None
 
+    # Simple debounce for noisy editors & ignore temp files
+    _last_events = deque(maxlen=1)  # (path, ts)
+    IGNORE_SUFFIXES = ('.swp', '.swo', '.tmp', '.bak', '~')
+
     # on_change handler with XML menu/data heuristic + always-broadcast for XML/assets
     def on_change(path: Path):
         p = str(path)
+        if p.endswith(IGNORE_SUFFIXES):
+            return
+
+        # debounce: skip repeated events for the same file within 300ms
+        now = time.time()
+        if _last_events and _last_events[0][0] == p and (now - _last_events[0][1]) < 0.3:
+            return
+        _last_events.append((p, now))
+
         lower = p.lower()
         try:
             if p.endswith(".xml"):
@@ -328,13 +347,14 @@ def dev(
     observer.start()
 
     # ------------------------------------------------------------------
-    # ⌨️  Keyboard listener: press 'r' to broadcast a reload
+    # ⌨️  Keyboard listener: press 'r' to broadcast a reload (TTY only)
     # ------------------------------------------------------------------
     def _keyboard_listener():
         """Listen for keyboard input ('r' or 'R' to trigger a browser reload)."""
+        if not sys.stdin.isatty():
+            info("[opm] stdin is not a TTY; manual 'r' reload disabled.")
+            return
         info("[opm] Press 'r' to manually trigger browser reload.")
-        # If stdin is not a TTY (e.g. running in background), this will block on read().
-        # That's fine—thread is daemonized and won't prevent shutdown.
         while True:
             try:
                 ch = sys.stdin.read(1)
@@ -351,7 +371,8 @@ def dev(
             except Exception:
                 break
 
-    threading.Thread(target=_keyboard_listener, daemon=True).start()
+    if sys.stdin.isatty():
+        threading.Thread(target=_keyboard_listener, daemon=True).start()
 
     # Main loop
     try:
