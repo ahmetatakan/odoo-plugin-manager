@@ -1,10 +1,9 @@
 # 🧩 OPM — Odoo Plugin Manager (CLI)
 
-**OPM** is a modern and lightweight command-line tool for Odoo developers.
-It streamlines development and testing by providing smart automation for cache refreshes,
-module testing, and environment management — without restarting Odoo.
+**OPM** is a modern and lightweight command-line tool for Odoo developers.  
+It automates **cache refresh**, **hot reload**, **quick module upgrades**, and **test execution** — all without restarting Odoo.
 
-Designed for developers who want to work faster and cleaner with **Odoo 15 → 17+**.
+Compatible with **Odoo 15 → 18**, supporting both **Docker** and **bare-metal** environments.
 
 ---
 
@@ -16,14 +15,20 @@ Install from PyPI:
 pip install odoo-plugin-manager
 ```
 
+Or update to the latest version:
+
+```bash
+pip install -U odoo-plugin-manager
+```
+
 ---
 
-## 📁 Configuration
+## 📁 Configuration (`opm.yaml`)
 
-When you first run OPM, it automatically creates an `opm.yaml` configuration file in your working directory.
-This file defines your Odoo connection details and development environment.
+When you first run any OPM command, it automatically creates an `opm.yaml` file in your working directory.  
+This file defines your Odoo connection details and runtime environment.
 
-Example:
+### Example configuration
 
 ```yaml
 runtime:
@@ -32,21 +37,23 @@ runtime:
   user: "admin"
   pass: "admin"
   addons:
-    - "/path/to/odoo/addons"
-  container: "odoo17"
+    - "/path/to/your/addons"
+  container: "odoo18"   # Docker container name OR "" if running on host
+  ws_host: "127.0.0.1"
+  ws_port: 8765
 ```
 
-> OPM automatically reads this file for every command.
-> No manual setup or environment variables required.
+> **Container rule:**
+> - For Docker: set `container: "your-container-name"`
+> - For bare-metal: set `container: ""`
 
 ---
 
-## 🚀 Commands
+## 🚀 Core Commands
 
 ### 🪄 `opm init`
 
-Initializes a new OPM project by generating a sample `opm.yaml` configuration file.
-You can edit this file to match your Odoo environment (URL, DB, user, etc.).
+Creates a new `opm.yaml` configuration file interactively.
 
 ```bash
 opm init
@@ -59,74 +66,104 @@ Example output:
 [opm] ✅ Configuration created successfully at ./opm.yaml
 ```
 
-After running `opm init`, you can immediately start developing with:
+---
+
+### ⚙️ `opm dev`
+
+Starts **development mode** — a live-reload watcher that detects file changes and automatically refreshes your browser or flushes Odoo caches.
 
 ```bash
 opm dev
 ```
+
+#### 🔁 What happens under the hood:
+- Watches your addon folders (`addons/`) for file changes  
+- When `.xml`, `.js`, or `.scss` files change → triggers a **cache flush**  
+- When `.py` or `__manifest__.py` changes → triggers a **quick module upgrade**  
+- Notifies all connected browsers via **WebSocket** to auto-reload the page  
+
+#### 💡 Keyboard Shortcuts
+While `opm dev` is running in your terminal:
+- Press **`r`** → manually trigger a browser reload  
+- Press **`Ctrl+C`** → safely stop the development server  
+
+#### 🌐 WebSocket Setup
+When `opm dev` runs, it opens a WebSocket server (default: `ws://127.0.0.1:8765`).  
+Your Odoo frontend connects to this server to receive reload notifications.
+
+If Odoo is hosted behind **Nginx**, configure it like this:
+
+```nginx
+location /__opm__/ws {
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_http_version 1.1;
+    proxy_pass http://127.0.0.1:8765;
+}
+```
+
+#### 🔒 Notes
+- If running on localhost, the WebSocket connects directly.
+- On production/staging behind Nginx, it connects via `/__opm__/ws`.
 
 ---
 
-### 🔧 `opm dev`
+### 🧩 `opm update <module>`
 
-Starts **development mode**, watching your Odoo addons directory for changes.
-Whenever you modify an XML, JS, or QWeb file, OPM triggers an automatic cache flush through RPC —
-instantly reflecting UI and view updates without restarting Odoo.
+Updates (or installs) a single module — automatically flushes caches and triggers live reload if `opm dev` is running.
 
 ```bash
-opm dev
+opm update my_module
 ```
+
+#### What it does:
+1. Detects Odoo binary automatically (works in Docker or locally)  
+2. Runs `-i` and `-u` flags for your module  
+3. Flushes Odoo caches via RPC after success  
+4. If `opm dev` is active → triggers browser reload automatically  
 
 Example output:
-
 ```
-[opm] Connected to Odoo environment 'runtime'
-[opm] Watching for changes in: /addons
-[opm] Asset/template changed: queue_job/views/menu.xml → flush caches
+[opm] 🧪 Starting update run…
+[opm] ▶️  Executing update command…
+✅ Update finished successfully.
+[opm] Post-update: caches flushed via RPC.
 ```
-
-> ⚠️ Note: This is **not full hot reload** — Python code changes still require a manual reload.
-> XML, QWeb, and JS updates are applied live through Odoo’s cache system.
 
 ---
 
 ### 🧪 `opm test <module>`
 
-Runs tests for the specified Odoo module.
-If the module is not yet installed, OPM automatically installs or upgrades it before running tests.
+Runs tests for the specified Odoo module.  
+If the module is not yet installed, OPM installs or upgrades it before testing.
 
 ```bash
 opm test my_module
 ```
 
-Example:
-
+Example output:
 ```
 [opm] Odoo binary detected: /usr/bin/odoo
 [opm] Running tests for module: my_module
 ✅ Tests finished successfully.
 ```
 
-If something goes wrong:
-
+Failed tests:
 ```
 ❌ Tests failed. See .opm/artifacts/test_last.log for details.
 ```
 
-All test outputs and logs are automatically saved to:
+All test logs are automatically saved in:
 
 ```
 .opm/artifacts/
 ```
 
-> The test command is ideal for CI/CD pipelines or quick module validation
-> without manually launching Odoo.
-
 ---
 
 ### 🩺 `opm diagnose`
 
-Runs a quick environment diagnostic to ensure OPM and Odoo are properly connected.
+Runs a diagnostic check to ensure Odoo and OPM configuration are correct.
 
 ```bash
 opm diagnose
@@ -145,7 +182,7 @@ Example output:
 
 ---
 
-## 🧩 Features
+## 🧠 Features
 
 | Feature                        | Description                                                         |
 | ------------------------------ | ------------------------------------------------------------------- |
@@ -174,7 +211,7 @@ These are upcoming features currently under development:
 | ---------------------- | --------------------------------------------------- |
 | **Language**           | Python 3.10+                                        |
 | **Dependencies**       | typer, rich, watchdog, requests, pyyaml, websockets |
-| **Odoo Compatibility** | 15 → 17+                                            |
+| **Odoo Compatibility** | 15 → 18                                             |
 | **Platforms**          | macOS / Linux                                       |
 | **Configuration File** | `opm.yaml` (auto-created on first run)              |
 
@@ -196,6 +233,9 @@ opm dev
 
 # 4️⃣ Run tests for your module
 opm test my_module
+
+# 5️⃣ Update your module and auto-reload browser
+opm update my_module
 ```
 
 This setup keeps your Odoo instance responsive
@@ -205,8 +245,8 @@ and your local development cycle short — no manual restarts needed.
 
 ## 📜 License
 
-Licensed under the **GNU General Public License v3 (GPL-3.0-or-later)**.
-The OPM CLI is open source.
+Licensed under the **GNU General Public License v3 (GPL-3.0-or-later)**.  
+The OPM CLI is open source.  
 Future Odoo-specific helper addons may be released under a separate commercial license.
 
 ---
