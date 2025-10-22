@@ -213,25 +213,4 @@ def update(
         except Exception as e:
             info(f"[opm] Post-update: RPC init failed ({e})")
 
-        # Notify dev WebSocket (for live reload)
-        try:
-            import asyncio
-            import websockets  # type: ignore
-            ws_host = (cfg.get("runtime", "ws_host") or "127.0.0.1")
-            try:
-                ws_port = int(cfg.get("runtime", "ws_port") or 8765)
-            except Exception:
-                ws_port = 8765
-
-            async def _notify_reload():
-                uri = f"ws://{ws_host}:{ws_port}"
-                try:
-                    async with websockets.connect(uri, ping_interval=None) as ws:
-                        await ws.send("reload")
-                        info(f"[opm] Notified dev WebSocket at {uri}")
-                except Exception as e:
-                    info(f"[opm] WS notify failed: {e}")
-
-            asyncio.run(_notify_reload())
-        except Exception:
-            pass
+        

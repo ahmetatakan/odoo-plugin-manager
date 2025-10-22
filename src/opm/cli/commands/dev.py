@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -7,7 +8,9 @@ import threading
 
 try:
     import websockets  # type: ignore
-    from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, ConnectionClosedError
+    from websockets.exceptions import (
+        ConnectionClosed, ConnectionClosedOK, ConnectionClosedError
+    )
 except Exception:  # pragma: no cover
     websockets = None
 
@@ -18,6 +21,7 @@ from watchdog.events import FileSystemEventHandler
 from ...core.env import load_config
 from ...core.odoo_rpc import OdooRPC
 from ...core.utils import info
+
 
 # ----------------------------------------------------------------------
 # 💬 WebSocket Bus (with visibility logs)
@@ -70,6 +74,7 @@ class _WSBus:
                 pass
             self.clients.discard(c)
         info(f"[opm] WS: broadcast '{msg}' to {len(self.clients)} client(s)")
+
 
 # ----------------------------------------------------------------------
 # ⚙️ WebSocket Server Runner
@@ -147,6 +152,7 @@ def _start_ws_server(host: str, port: int, ping_interval: int = 30, ping_timeout
 
     return broadcast_sync, stop_sync
 
+
 # ----------------------------------------------------------------------
 # 👀 Watchdog Event Handler
 # ----------------------------------------------------------------------
@@ -159,6 +165,7 @@ class _WatchHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         self.on_change(Path(event.src_path))
+
 
 # ----------------------------------------------------------------------
 # 🚀 dev command
@@ -249,7 +256,7 @@ def dev(
         def broadcast(_msg: str): return None
         def stop_ws(): return None
 
-    # on_change handler with XML menu/data heuristic + always-broadcast
+    # on_change handler with XML menu/data heuristic + always-broadcast for XML/assets
     def on_change(path: Path):
         p = str(path)
         lower = p.lower()
@@ -270,7 +277,7 @@ def dev(
                         rpc.call("opm.dev.tools", "flush_caches")
                     except Exception as e:
                         info(f"[opm] flush error: {e}")
-                # always broadcast after XML
+                # Always broadcast after XML
                 try:
                     broadcast("reload")
                 except Exception:
@@ -314,10 +321,39 @@ def dev(
             except Exception:
                 pass
 
+    # Start watchdog
     handler = _WatchHandler(on_change)
     observer = Observer()
     observer.schedule(handler, path=str(addons_path), recursive=True)
     observer.start()
+
+    # ------------------------------------------------------------------
+    # ⌨️  Keyboard listener: press 'r' to broadcast a reload
+    # ------------------------------------------------------------------
+    def _keyboard_listener():
+        """Listen for keyboard input ('r' or 'R' to trigger a browser reload)."""
+        info("[opm] Press 'r' to manually trigger browser reload.")
+        # If stdin is not a TTY (e.g. running in background), this will block on read().
+        # That's fine—thread is daemonized and won't prevent shutdown.
+        while True:
+            try:
+                ch = sys.stdin.read(1)
+                if not ch:
+                    # EOF (e.g. piped); avoid tight loop
+                    time.sleep(0.2)
+                    continue
+                if ch.lower() == 'r':
+                    info("[opm] Manual reload requested → broadcasting 'reload'")
+                    try:
+                        broadcast("reload")
+                    except Exception as e:
+                        info(f"[opm] Manual reload broadcast failed: {e}")
+            except Exception:
+                break
+
+    threading.Thread(target=_keyboard_listener, daemon=True).start()
+
+    # Main loop
     try:
         while True:
             time.sleep(1)
