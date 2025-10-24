@@ -6,6 +6,7 @@ DEFAULT_YAML = """\
 platform: odoo
 
 runtime:
+  dev_all_hint: true
   odoo_url: "http://localhost:10017"
   db: "main"
   user: "<user>"
@@ -20,6 +21,8 @@ runtime:
   vite_proxy: "http://localhost:5173"
   ws_host: "127.0.0.1"
   ws_port: 8765
+dev:
+  reload_strategy: browser     # browser | legacy_rpc
 """
 
 def init():

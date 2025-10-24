@@ -1,11 +1,16 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
+
 import sys
+import re
+import shlex
 import time
-from pathlib import Path
-from typing import Optional
 import asyncio
 import threading
 from collections import deque
+from pathlib import Path
+from typing import Optional
+from xmlrpc.client import ProtocolError
 
 try:
     import websockets  # type: ignore
@@ -21,11 +26,107 @@ from watchdog.events import FileSystemEventHandler
 
 from ...core.env import load_config
 from ...core.odoo_rpc import OdooRPC
-from ...core.utils import info
+from ...core.utils import info, run
 
 
 # ----------------------------------------------------------------------
-# 💬 WebSocket Bus (with visibility logs & throttled no-client log)
+# Helpers
+# ----------------------------------------------------------------------
+def safe_rpc_call(rpc: OdooRPC, model: str, method: str, *args):
+    """
+    RPC wrapper that swallows transient 502/504 during Odoo reload windows
+    and returns None instead of raising. Other errors are re-raised.
+    """
+    try:
+        return rpc.call(model, method, *args)
+    except ProtocolError as e:
+        if getattr(e, "errcode", None) in (502, 504):
+            info("[opm] Odoo reload window (502/504) → skipping RPC, browser reload only.")
+            return None
+        raise
+
+
+def _has_dev_all_in_cmdline(cmd: str) -> bool:
+    """
+    Detect if the given command line has --dev with 'all' among its values.
+    Matches: '--dev=all', '--dev all', '--dev=web,all', '--dev web,all', etc.
+    """
+    if not cmd:
+        return False
+    m = re.search(r"--dev(?:=|\s+)([^\s]+)", cmd)
+    if not m:
+        return False
+    val = m.group(1)  # e.g. 'all', 'web,all', 'all,assets'
+    parts = re.split(r"[,\s]+", val.strip().lower())
+    return "all" in parts
+
+
+def _detect_dev_all_in_container(container: str) -> bool:
+    """
+    Robust detection inside Docker:
+    1) /proc/1/cmdline (no truncation)
+    2) pgrep -af
+    3) ps auxww
+    """
+    if not container:
+        return False
+    try:
+        # 1) /proc/1/cmdline
+        code, out, _ = run([
+            "bash", "-lc",
+            f"docker exec -i {shlex.quote(container)} sh -lc \"tr '\\0' ' ' </proc/1/cmdline 2>/dev/null || true\""
+        ])
+        if code == 0 and out and _has_dev_all_in_cmdline(out):
+            return True
+
+        # 2) pgrep -af
+        code, out, _ = run([
+            "bash", "-lc",
+            f"docker exec -i {shlex.quote(container)} sh -lc \"pgrep -af 'odoo|odoo-bin|python.*odoo' 2>/dev/null || true\""
+        ])
+        if code == 0 and out:
+            for line in out.splitlines():
+                if _has_dev_all_in_cmdline(line):
+                    return True
+
+        # 3) ps auxww fallback
+        code, out, _ = run([
+            "bash", "-lc",
+            f"docker exec -i {shlex.quote(container)} sh -lc \"ps auxww | grep -E 'odoo|odoo-bin|python.*odoo' | grep -v grep || true\""
+        ])
+        if code == 0 and out:
+            for line in out.splitlines():
+                if _has_dev_all_in_cmdline(line):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _detect_dev_all_on_host() -> bool:
+    """
+    Detect --dev 'all' for a host-run Odoo process.
+    Uses pgrep -af when possible, then ps auxww fallback.
+    """
+    try:
+        code, out, _ = run(["bash", "-lc", "pgrep -af 'odoo|odoo-bin|python.*odoo' 2>/dev/null || true"])
+        if code == 0 and out:
+            for line in out.splitlines():
+                if _has_dev_all_in_cmdline(line):
+                    return True
+
+        code, out, _ = run(["bash", "-lc", "ps auxww | grep -E 'odoo|odoo-bin|python.*odoo' | grep -v grep || true"])
+        if code == 0 and out:
+            for line in out.splitlines():
+                if _has_dev_all_in_cmdline(line):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+# ----------------------------------------------------------------------
+# WebSocket Bus
 # ----------------------------------------------------------------------
 class _WSBus:
     def __init__(self):
@@ -33,35 +134,27 @@ class _WSBus:
         self._last_no_client_log = 0.0  # throttle "no clients" log
 
     async def handler(self, ws):
-        """Handle a connected client and re-broadcast any received messages to all clients."""
+        """Handle a connected client and relay any received messages to all clients."""
         self.clients.add(ws)
         try:
-            # Listen for incoming messages from the connected client
             async for msg in ws:
                 try:
-                    # Decode the message (handle both text and binary frames)
                     text = msg.decode() if isinstance(msg, (bytes, bytearray)) else str(msg)
                     if text:
-                        # Broadcast the message to all connected clients (including sender)
                         await self.broadcast(text)
                 except Exception as e:
-                    # Log but continue processing other messages
                     info(f"[opm] WS handler relay error: {e}")
                     continue
         except (ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
-            # Gracefully handle expected disconnections
             pass
         except Exception as e:
-            # Log unexpected errors
             info(f"[opm] WS handler error: {e}")
         finally:
-            # Always remove the client from the active list when disconnected
             self.clients.discard(ws)
 
     async def broadcast(self, msg: str):
         """Send message to all clients (skip closed) and log count."""
         if not self.clients:
-            # Throttle the "no clients" message to once every 10s
             now = time.time()
             if now - self._last_no_client_log > 10:
                 info("[opm] WS: no connected clients; skipping broadcast")
@@ -82,9 +175,6 @@ class _WSBus:
         info(f"[opm] WS: broadcast '{msg}' to {len(self.clients)} client(s)")
 
 
-# ----------------------------------------------------------------------
-# ⚙️ WebSocket Server Runner
-# ----------------------------------------------------------------------
 def _start_ws_server(host: str, port: int, ping_interval: int = 30, ping_timeout: int = 60):
     """
     Start a lightweight WS server in a background thread.
@@ -160,7 +250,7 @@ def _start_ws_server(host: str, port: int, ping_interval: int = 30, ping_timeout
 
 
 # ----------------------------------------------------------------------
-# 👀 Watchdog Event Handler
+# Watchdog
 # ----------------------------------------------------------------------
 class _WatchHandler(FileSystemEventHandler):
     def __init__(self, on_change):
@@ -174,7 +264,7 @@ class _WatchHandler(FileSystemEventHandler):
 
 
 # ----------------------------------------------------------------------
-# 🚀 dev command
+# dev command
 # ----------------------------------------------------------------------
 def dev(
     env: Optional[str] = typer.Option(
@@ -190,7 +280,7 @@ def dev(
     """
     cfg = load_config(config)
 
-    # Decide environment
+    # Select environment
     if env:
         if not hasattr(cfg, "resolve_env"):
             raise typer.BadParameter("Your config does not support 'environments'.")
@@ -241,6 +331,15 @@ def dev(
     rpc.login()
     info(f"Connected to Odoo environment '{env or 'runtime'}'. Watching for changes in: {addons_path}")
 
+    # Detect dev=all at startup (with optional override)
+    container_name = (cfg.get("runtime", "container") or "").strip()
+    dev_all_hint = bool(cfg.get("runtime", "dev_all_hint") or False)
+    if dev_all_hint:
+        DEV_ALL = True
+    else:
+        DEV_ALL = _detect_dev_all_in_container(container_name) if container_name else _detect_dev_all_on_host()
+    info(f"[opm] Detected dev=all: {'YES' if DEV_ALL else 'NO'} (override: {'ON' if dev_all_hint else 'OFF'})")
+
     # WebSocket
     ws_host = (cfg.get("runtime", "ws_host") or "127.0.0.1")
     try:
@@ -262,14 +361,19 @@ def dev(
         def broadcast(_msg: str): return None
         def stop_ws(): return None
 
-    # Simple debounce for noisy editors & ignore temp files
+    # Debounce & temp files ignore
     _last_events = deque(maxlen=1)  # (path, ts)
-    IGNORE_SUFFIXES = ('.swp', '.swo', '.tmp', '.bak', '~')
+    IGNORE_SUFFIXES = ('.swp', '.swo', '.tmp', '.bak', '~', '.pyc')
+    IGNORE_DIR_FRAGMENTS = ('/__pycache__/', '/.git/', '/.idea/', '/.vscode/', '/.mypy_cache/', '/.pytest_cache/')
 
-    # on_change handler with XML menu/data heuristic + always-broadcast for XML/assets
+    # Change handler
     def on_change(path: Path):
         p = str(path)
         if p.endswith(IGNORE_SUFFIXES):
+            return
+        
+        lower = p.lower().replace('\\', '/')
+        if any(frag in lower for frag in IGNORE_DIR_FRAGMENTS):
             return
 
         # debounce: skip repeated events for the same file within 300ms
@@ -281,22 +385,20 @@ def dev(
         lower = p.lower()
         try:
             if p.endswith(".xml"):
-                # Heuristic: menus/data usually need upgrade; views generally flush is enough
                 needs_upgrade = ("menu" in lower) or ("/data/" in lower)
                 if needs_upgrade:
                     target_module = module or Path(p).parts[-2]
                     info(f"[opm] XML (menu/data) changed: {p} → quick upgrade {target_module}")
                     try:
-                        rpc.call("opm.dev.tools", "quick_upgrade", target_module)
+                        safe_rpc_call(rpc, "opm.dev.tools", "quick_upgrade", target_module)
                     except Exception as e:
                         info(f"[opm] upgrade error: {e}")
                 else:
                     info(f"[opm] XML (view) changed: {p} → flush caches")
                     try:
-                        rpc.call("opm.dev.tools", "flush_caches")
+                        safe_rpc_call(rpc, "opm.dev.tools", "flush_caches")
                     except Exception as e:
                         info(f"[opm] flush error: {e}")
-                # Always broadcast after XML
                 try:
                     broadcast("reload")
                 except Exception:
@@ -306,7 +408,7 @@ def dev(
             if p.endswith((".scss", ".js")):
                 info(f"[opm] Asset changed: {p} → flush caches")
                 try:
-                    rpc.call("opm.dev.tools", "flush_caches")
+                    safe_rpc_call(rpc, "opm.dev.tools", "flush_caches")
                 except Exception as e:
                     info(f"[opm] flush error: {e}")
                 finally:
@@ -318,9 +420,35 @@ def dev(
 
             if p.endswith(".py") or p.endswith("__manifest__.py"):
                 target_module = module or Path(p).parts[-2]
+                if DEV_ALL:
+                    info(f"[opm] Python/manifest changed: {p} → dev=all detected → browser reload only (no RPC)")
+                    try:
+                        broadcast(f"reload:{target_module}")
+                    except Exception:
+                        pass
+                    return
+
+                # Not dev=all → attempt quick upgrade, but handle reload windows
                 info(f"[opm] Python/manifest changed: {p} → quick upgrade {target_module}")
+                # simple reachability probe
                 try:
-                    rpc.call("opm.dev.tools", "quick_upgrade", target_module)
+                    safe_rpc_call(rpc, "ir.config_parameter", "get_param", "web.base.url")
+                except Exception:
+                    info("[opm] Odoo likely reloading; waiting 3s before retry…")
+                    time.sleep(3)
+                    try:
+                        safe_rpc_call(rpc, "ir.config_parameter", "get_param", "web.base.url")
+                    except Exception:
+                        info("[opm] Odoo still unreachable → skipping RPC, browser reload only.")
+                        try:
+                            broadcast(f"reload:{target_module}")
+                        except Exception:
+                            pass
+                        return
+
+                # perform quick upgrade
+                try:
+                    safe_rpc_call(rpc, "opm.dev.tools", "quick_upgrade", target_module)
                 except Exception as e:
                     info(f"[opm] upgrade error: {e}")
                 finally:
@@ -333,7 +461,6 @@ def dev(
             info(f"[opm] Changed: {p} (no action)")
 
         except Exception as e:
-            # Guard against any unexpected watcher errors
             info(f"[opm] on_change error: {e}")
             try:
                 broadcast("reload")
@@ -346,11 +473,9 @@ def dev(
     observer.schedule(handler, path=str(addons_path), recursive=True)
     observer.start()
 
-    # ------------------------------------------------------------------
-    # ⌨️  Keyboard listener: press 'r' to broadcast a reload (TTY only)
-    # ------------------------------------------------------------------
+    # Keyboard listener (TTY only)
     def _keyboard_listener():
-        """Listen for keyboard input ('r' or 'R' to trigger a browser reload)."""
+        """Press 'r' to force a browser reload."""
         if not sys.stdin.isatty():
             info("[opm] stdin is not a TTY; manual 'r' reload disabled.")
             return
@@ -359,7 +484,6 @@ def dev(
             try:
                 ch = sys.stdin.read(1)
                 if not ch:
-                    # EOF (e.g. piped); avoid tight loop
                     time.sleep(0.2)
                     continue
                 if ch.lower() == 'r':
