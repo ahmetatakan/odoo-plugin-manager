@@ -21,6 +21,7 @@ runtime:
   vite_proxy: "http://localhost:5173"
   ws_host: "127.0.0.1"
   ws_port: 8765
+  runtime.dev_all_hint: true
 dev:
   reload_strategy: browser     # browser | legacy_rpc
 """
