@@ -229,7 +229,7 @@ def update(
                     rpc.call("opm.dev.tools", "flush_caches")
                     info("[opm] Post-update: caches flushed via RPC.")
                 except Exception as e:
-                    info(f"[opm] Post-update: flush skipped ({e})")
+                    info(f"[opm] Post-update: flush skipped")
         except Exception as e:
             info(f"[opm] Post-update: RPC init failed ({e})")
 
