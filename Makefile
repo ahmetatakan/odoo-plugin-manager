@@ -20,7 +20,7 @@ PYPI_REPO := https://upload.pypi.org/legacy/
 TEST_REPO := https://test.pypi.org/legacy/
 
 # Version extraction from pyproject.toml
-VERSION := $(shell grep -m1 '^version' pyproject.toml | cut -d'\"' -f2)
+VERSION := $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' pyproject.toml | head -n1)
 
 # ----------------------
 # 🎯 Default target
@@ -34,6 +34,7 @@ help:
 	@echo "  make publish      → Upload to PyPI"
 	@echo "  make testpublish  → Upload to TestPyPI"
 	@echo "  make bump         → Bump patch version (auto-increment)"
+	@echo "  make release      → Bump version, build, and publish to PyPI"
 	@echo ""
 
 # ----------------------
@@ -49,10 +50,14 @@ clean:
 # ----------------------
 bump:
 	@echo "🔢 Bumping patch version..."
-	@old=$$(grep -E '^[[:space:]]*version[[:space:]]*=' pyproject.toml | head -n1 | sed -E 's/^[^"]*"([^"]+)".*/\1/'); \
+	@old=$$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' pyproject.toml | head -n1); \
 	if [ -z "$$old" ]; then echo "❌ Version not found in pyproject.toml"; exit 1; fi; \
-	new=$$(python3 -c "from packaging import version; parts=version.parse('$$old').base_version.split('.'); parts[-1]=str(int(parts[-1])+1); print('.'.join(parts))"); \
-	if [[ "$$(uname)" == "Darwin" ]]; then sed -i '' "s/version = \"$$old\"/version = \"$$new\"/" pyproject.toml; else sed -i "s/version = \"$$old\"/version = \"$$new\"/" pyproject.toml; fi; \
+	new=$$(python3 -c "parts='$$old'.split('.'); parts[-1]=str(int(parts[-1])+1); print('.'.join(parts))"); \
+	if [ "$$(uname)" = "Darwin" ]; then \
+		sed -i '' -E "s/^([[:space:]]*version[[:space:]]*=[[:space:]]*)\"$$old\"/\1\"$$new\"/" pyproject.toml; \
+	else \
+		sed -i -E "s/^([[:space:]]*version[[:space:]]*=[[:space:]]*)\"$$old\"/\1\"$$new\"/" pyproject.toml; \
+	fi; \
 	echo "✅ New version: $$new"
 
 # ----------------------
@@ -66,7 +71,7 @@ build: clean
 # ----------------------
 # 🚀 Publish (PyPI)
 # ----------------------
-publish:
+publish: build
 	@echo "🚀 Publishing $(PACKAGE) $(VERSION) to PyPI..."
 	$(PYTHON) -m twine upload --repository-url $(PYPI_REPO) $(DIST_DIR)/*
 	@echo "✅ Published: https://pypi.org/project/$(PACKAGE)/$(VERSION)/"
@@ -84,3 +89,5 @@ testpublish:
 # ----------------------
 version:
 	@echo "📦 Current version: $(VERSION)"
+
+release: bump publish
