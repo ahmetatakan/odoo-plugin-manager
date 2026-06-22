@@ -73,7 +73,7 @@ build: clean
 # ----------------------
 publish: build
 	@echo "🚀 Publishing $(PACKAGE) $(VERSION) to PyPI..."
-	$(PYTHON) -m twine upload --repository-url $(PYPI_REPO) $(DIST_DIR)/*
+	$(PYTHON) -m twine upload --verbose $(DIST_DIR)/*
 	@echo "✅ Published: https://pypi.org/project/$(PACKAGE)/$(VERSION)/"
 
 # ----------------------
