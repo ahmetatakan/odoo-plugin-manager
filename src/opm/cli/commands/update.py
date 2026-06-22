@@ -155,7 +155,7 @@ def update(
 
         db_args_str = " ".join(db_args)
         cmd = f"""docker exec {tty_flag} {shlex.quote(container)} {shlex.quote(odoo_bin)} -d {shlex.quote(db)} \
-                  -i {shlex.quote(module)} -u {shlex.quote(module)} --stop-after-init \
+                  -u {shlex.quote(module)} --stop-after-init \
                   --addons-path={shlex.quote(addons_path)} {db_args_str} {ports} {log_flag} {log_file_flag}"""
 
         artifacts_dir = Path(".opm/artifacts")
